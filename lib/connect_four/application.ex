@@ -5,10 +5,13 @@ defmodule ConnectFour.Application do
 
   use Application
 
+  alias ConnectFour.Game
+
   def start(_type, _args) do
     children = [
       # Starts a worker by calling: ConnectFour.Worker.start_link(arg)
       # {ConnectFour.Worker, arg}
+      Game
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
