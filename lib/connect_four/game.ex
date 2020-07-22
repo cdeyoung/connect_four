@@ -18,10 +18,17 @@ defmodule ConnectFour.Game do
   end
 
   @doc """
+  Set the player's turn. ONLY USE FOR TESTING!
+  """
+  def players_turn(player) do
+    GenServer.call(__MODULE__, {:players_turn, player})
+  end
+
+  @doc """
   Start/restart the game.
   """
   def reset do
-    GenServer.call(__MODULE__, :reset)
+    GenServer.cast(__MODULE__, :reset)
   end
 
   @doc """
@@ -35,20 +42,28 @@ defmodule ConnectFour.Game do
   Take a turn.
   """
   def take_turn(column, player) do
-    position = {column, GenServer.call(__MODULE__, {:best_move, column})}
-
-    {:global, "#{inspect position}"}
-    |> GenServer.whereis()
+    column
+    |> best_move()
     |> case do
-      nil ->
-        GenServer.call(__MODULE__, {:take_turn, position})
-        GenServer.call({:global, "#{inspect position}"}, {:take_turn, %{position: position, player: player}})
+      :out_of_bounds ->
+        :out_of_bounds
 
-      _ ->
-        GenServer.call({:global, "#{inspect position}"}, {:take_turn, %{position: position, player: player}})
+      position ->
+        position
+        |> _take_a_turn(player)
+        |> case do
+          true ->
+            :winner
+
+          false ->
+            GenServer.call(__MODULE__, :next_player)
+            if GenServer.call(__MODULE__, :any_open) do
+              :loser
+            else
+              :stalemate
+            end
+        end
     end
-
-    GenServer.call(__MODULE__, :next_player)
   end
 
   @doc """
@@ -58,7 +73,9 @@ defmodule ConnectFour.Game do
     GenServer.call(__MODULE__, :whose_turn)
   end
 
-  def best_move(column), do: GenServer.call(__MODULE__, {:best_move, column})
+  def best_move(column) do
+    GenServer.call(__MODULE__, {:best_move, column})
+  end
 
   ################################################################################
   # Server Callbacks.
@@ -72,12 +89,30 @@ defmodule ConnectFour.Game do
   end
 
   @impl GenServer
-  def handle_call({:best_move, column}, _from, state) do
-    best_move = Enum.find_index(5..0, fn x ->
-      state.board[{column, x}] == nil
+  def handle_call(:any_open, _from, state) do
+    all_nils = state.board
+    |> Map.keys()
+    |> Enum.filter(fn(x) ->
+      state.board[x] == nil
     end)
 
-    {:reply, best_move, state}
+    {:reply, all_nils != [], state}
+  end
+
+  @impl GenServer
+  def handle_call({:best_move, column}, _from, state) do
+    list_length = 5
+    best_move = Enum.find_index(list_length..0, fn x ->
+      state.board["#{inspect {x, column}}"] == nil
+    end)
+
+    case best_move do
+      nil ->
+        {:reply, :out_of_bounds, state}
+
+      _ ->
+        {:reply, {list_length - best_move, column}, state}
+    end
   end
 
   @impl GenServer
@@ -95,19 +130,14 @@ defmodule ConnectFour.Game do
   end
 
   @impl GenServer
-  def handle_call(:reset, _from, _state) do
-    state = %{
-      player: _randomize_player(),
-      board: _generate_board()
-    }
-
-    {:reply, :ok, state}
+  def handle_call({:players_turn, player}, _from, state) do
+    {:reply, :ok, %{ state | player: player }}
   end
 
   @impl GenServer
-  def handle_call({:take_turn, position}, _from, state) do
-    Piece.start_link(position)
-    state = Map.put(state, position, {:global, position})
+  def handle_call({:take_turn, player, position}, _from, state) do
+    Piece.start_link(%{player: player, position: position})
+    state = put_in(state, [:board, "#{inspect position}"], {:global, "#{inspect position}"})
 
     {:reply, :ok, state}
   end
@@ -117,19 +147,48 @@ defmodule ConnectFour.Game do
     {:reply, state.player, state}
   end
 
+  @impl GenServer
+  def handle_cast(:reset, state) do
+    state.board
+    |> Map.keys()
+    |> Enum.filter(fn x -> state.board[x] != nil end)
+    |> Enum.each(fn x -> GenServer.cast({:global, x}, :stop) end)
+
+    {:noreply, %{ state | board: _generate_board(), player: _randomize_player()}}
+  end
+
   ################################################################################
   # Private Functions.
   ################################################################################
 
   defp _generate_board do
-    for row <- 0..6,
-      column <- 0..5,
+    for row <- 0..5,
+      column <- 0..6,
       reduce: %{} do
-        acc -> Map.put(acc, {row, column}, nil)
+        acc -> Map.put(acc, "#{inspect {row, column}}", nil)
       end
   end
 
   defp _randomize_player do
     Enum.random(~w(red yellow)a)
+  end
+
+  defp _take_a_turn(position, player) do
+    {:global, "#{inspect position}"}
+    |> GenServer.whereis()
+    |> case do
+      nil ->
+        GenServer.call(__MODULE__, {:take_turn, player, position})
+        |> case do
+          :ok ->
+            GenServer.call({:global, "#{inspect position}"}, :take_turn)
+
+          :out_of_bounds ->
+            :out_of_bounds
+        end
+
+      _ ->
+        GenServer.call({:global, "#{inspect position}"}, :take_turn)
+    end
   end
 end
